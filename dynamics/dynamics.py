@@ -306,44 +306,51 @@ class DubinsCar4D(Dynamics):
         if self.freeze_model:
             raise NotImplementedError
 
-        # Drift part:
-        drift = state[..., 2]*torch.cos(state[..., 3]) * dvds[..., 0] \
-              + state[..., 2]*torch.sin(state[..., 3]) * dvds[..., 1]
+        v = state[..., 2]
+        th = state[..., 3]
 
-        # Control-affine, symmetric bounds:
-        # max_a a*dv_v = a_max*|dv_v| ; max_om om*dv_th = om_max*|dv_th|
-        # For reach mode, you typically swap to min, giving negative absolute values.
-        if self.set_mode == 'avoid':
-            ctrl = self.a_max*torch.abs(dvds[..., 2]) + self.omega_max*torch.abs(dvds[..., 3])
-            # min over symmetric disturbance -> -d_max*|dv|
-            dstb = -self.dx_max*torch.abs(dvds[..., 0]) - self.dy_max*torch.abs(dvds[..., 1])
+        Vx  = dvds[..., 0]
+        Vy  = dvds[..., 1]
+        Vv  = dvds[..., 2]
+        Vth = dvds[..., 3]
+
+        drift = v*torch.cos(th)*Vx + v*torch.sin(th)*Vy
+
+        if self.set_mode == 'avoid':   # unsafe BRS: min_u max_d
+            ctrl = -self.a_max*torch.abs(Vv) - self.omega_max*torch.abs(Vth)
+            dstb =  self.dx_max*torch.abs(Vx) + self.dy_max*torch.abs(Vy)
             return drift + ctrl + dstb
-        elif self.set_mode == 'reach':
-            ctrl = -self.a_max*torch.abs(dvds[..., 2]) - self.omega_max*torch.abs(dvds[..., 3])
-            dstb = +self.dx_max*torch.abs(dvds[..., 0]) + self.dy_max*torch.abs(dvds[..., 1])
+
+        elif self.set_mode == 'reach': # opposite game
+            ctrl =  self.a_max*torch.abs(Vv) + self.omega_max*torch.abs(Vth)
+            dstb = -self.dx_max*torch.abs(Vx) - self.dy_max*torch.abs(Vy)
             return drift + ctrl + dstb
+
         else:
             raise ValueError("set_mode must be 'reach' or 'avoid'")
 
     def optimal_control(self, state, dvds):
-        # symmetric bounds: argmax gives sign(dv), argmin gives -sign(dv)
         s = torch.sign
-        if self.set_mode == 'avoid':
-            a = self.a_max * s(dvds[..., 2])
-            om = self.omega_max * s(dvds[..., 3])
-        else:  # reach
+        if self.set_mode == 'avoid':   # unsafe BRS: min_u
             a = -self.a_max * s(dvds[..., 2])
             om = -self.omega_max * s(dvds[..., 3])
+        elif self.set_mode == 'reach': # opposite game (usually not what you want here)
+            a =  self.a_max * s(dvds[..., 2])
+            om =  self.omega_max * s(dvds[..., 3])
+        else:
+            raise ValueError
         return torch.stack((a, om), dim=-1)
 
     def optimal_disturbance(self, state, dvds):
         s = torch.sign
-        if self.set_mode == 'avoid':
-            dx = -self.dx_max * s(dvds[..., 0])   # minimizer
+        if self.set_mode == 'avoid':   # unsafe BRS: max_d
+            dx =  self.dx_max * s(dvds[..., 0])
+            dy =  self.dy_max * s(dvds[..., 1])
+        elif self.set_mode == 'reach': # opposite game
+            dx = -self.dx_max * s(dvds[..., 0])
             dy = -self.dy_max * s(dvds[..., 1])
-        else:  # reach
-            dx = +self.dx_max * s(dvds[..., 0])   # maximizer
-            dy = +self.dy_max * s(dvds[..., 1])
+        else:
+            raise ValueError
         return torch.stack((dx, dy), dim=-1)
 
     def plot_config(self):
