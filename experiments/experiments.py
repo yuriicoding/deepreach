@@ -74,7 +74,14 @@ class Experiment(ABC):
                 
                 ax = fig.add_subplot(len(times), len(zs), (j+1) + i*len(zs))
                 ax.set_title('t = %0.2f, %s = %0.2f' % (times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
-                s = ax.imshow(1*(values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T <= 0), cmap='bwr', origin='lower', extent=(-1., 1., -1., 1.))
+
+                #remove normalization for plotting
+                s = ax.imshow(
+                        1*(values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T <= 0),
+                        cmap='bwr',
+                        origin='lower',
+                        extent=(x_min, x_max, y_min, y_max)
+                    )
                 fig.colorbar(s) 
         fig.savefig(save_path)
         if self.use_wandb:
@@ -495,6 +502,43 @@ class Experiment(ABC):
             dataset = self.dataset
             dynamics = dataset.dynamics
             raise NotImplementedError
+
+        if was_training:
+            self.model.train()
+            self.model.requires_grad_(True)
+
+    def infer(self, device, checkpoint_epoch,
+            x_resolution=200,
+            y_resolution=200,
+            z_resolution=5,
+            time_resolution=3,
+            save_path=None):
+
+        was_training = self.model.training
+        self.model.eval()
+        self.model.requires_grad_(False)
+
+        self._load_checkpoint(checkpoint_epoch)
+
+        v_slices = [0.0, 2.0, 4.0]
+
+        for v_slice in v_slices:
+            self.dataset.dynamics.plot_v = v_slice
+
+            curr_save_path = os.path.join(
+                self.experiment_dir,
+                f'inference_v_{v_slice}_epoch_{checkpoint_epoch}.png'
+            )
+
+            self.validate(
+                device=device,
+                epoch=checkpoint_epoch,
+                save_path=curr_save_path,
+                x_resolution=x_resolution,
+                y_resolution=y_resolution,
+                z_resolution=z_resolution,
+                time_resolution=time_resolution
+            )
 
         if was_training:
             self.model.train()

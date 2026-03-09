@@ -15,7 +15,9 @@ from utils import modules, dataio, losses
 
 p = configargparse.ArgumentParser()
 p.add_argument('-c', '--config_filepath', required=False, is_config_file=True, help='Path to config file.')
-p.add_argument('--mode', type=str, required=True, choices=['all', 'train', 'test'], help="Experiment mode to run (new experiments must choose 'all' or 'train').")
+
+#add choice to infer
+p.add_argument('--mode', type=str, required=True, choices=['all','train','test','infer'], help="Experiment mode to run (new experiments must choose 'all' or 'train').")
 
 # save/load directory options
 p.add_argument('--experiments_dir', type=str, default='./runs', help='Where to save the experiment subdirectory.')
@@ -25,7 +27,7 @@ p.add_argument('--use_wandb', default=False, action='store_true', help='use wand
 use_wandb = p.parse_known_args()[0].use_wandb
 if use_wandb:
     p.add_argument('--wandb_project', type=str, required=True, help='wandb project')
-    p.add_argument('--wandb_entity', type=str, required=True, help='wandb entity')
+    p.add_argument('--wandb_entity', type=str, required=False, help='wandb entity')
     p.add_argument('--wandb_group', type=str, required=True, help='wandb group')
     p.add_argument('--wandb_name', type=str, required=True, help='name of wandb run')
 
@@ -115,6 +117,9 @@ if (mode == 'all') or (mode == 'test'):
 
 opt = p.parse_args()
 
+if not hasattr(opt, "device"):
+    opt.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
 # start wandb
 if use_wandb:
     wandb.init(
@@ -135,10 +140,16 @@ if (mode == 'all') or (mode == 'train'):
             quit()
         shutil.rmtree(experiment_dir)     
     os.makedirs(experiment_dir)
-elif mode == 'test':
-    # confirm that experiment dir already exists
+# elif mode == 'test':
+#     # confirm that experiment dir already exists
+#     if not os.path.exists(experiment_dir):
+#         raise RuntimeError('Cannot run test mode: experiment directory not found!')
+
+elif mode == 'test' or mode == 'infer':
+    # confirm experiment dir exists
     if not os.path.exists(experiment_dir):
-        raise RuntimeError('Cannot run test mode: experiment directory not found!')
+        raise RuntimeError('Cannot run %s mode: experiment directory not found!' % mode)
+
 
 current_time = datetime.now()
 # log current config
@@ -203,3 +214,9 @@ if (mode == 'all') or (mode == 'test'):
         checkpoint_toload=opt.checkpoint_toload, dt=opt.dt,
         num_scenarios=opt.num_scenarios, num_violations=opt.num_violations, 
         set_type='BRT' if orig_opt.minWith in ['zero', 'target'] else 'BRS', control_type=opt.control_type, data_step=opt.data_step)
+
+if mode == 'infer':
+    experiment.infer(
+        device = torch.device(opt.device),
+        checkpoint_epoch=110000
+    )

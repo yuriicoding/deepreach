@@ -196,6 +196,172 @@ class ParameterizedVertDrone2D(Dynamics):
             'y_axis_idx': 1,
             'z_axis_idx': 2,
         }
+    
+#new dynamic for dubins car (luna)
+class Dubins4DBoxNoDisturbance(Dynamics):
+    """
+    state = [x, y, v, theta]
+    control = [a, w]
+    disturbance = none
+    target = axis-aligned box in (x, y)
+    """
+
+    def __init__(
+        self,
+        set_mode: str,
+        x_min: float,
+        x_max: float,
+        y_min: float,
+        y_max: float,
+        v_min: float,
+        v_max: float,
+        th_min: float,
+        th_max: float,
+        x_center: float,
+        y_center: float,
+        box_radius_x: float,
+        box_radius_y: float,
+        umin_a: float,
+        umax_a: float,
+        umin_w: float,
+        umax_w: float,
+        wheelbase: float,
+    ):
+        assert set_mode in ["reach", "avoid"]
+
+        self.x_min = x_min
+        self.x_max = x_max
+        self.y_min = y_min
+        self.y_max = y_max
+        self.v_min = v_min
+        self.v_max = v_max
+        self.th_min = th_min
+        self.th_max = th_max
+
+        self.x_center = x_center
+        self.y_center = y_center
+        self.box_radius_x = box_radius_x
+        self.box_radius_y = box_radius_y
+
+        self.umin_a = umin_a
+        self.umax_a = umax_a
+        self.umin_w = umin_w
+        self.umax_w = umax_w
+        self.wheelbase = wheelbase
+
+        super().__init__(
+            loss_type='brt_hjivi',
+            set_mode=set_mode,
+            state_dim=4,
+            input_dim=5,
+            control_dim=2,
+            disturbance_dim=0,
+            state_mean=[
+                0.5 * (self.x_min + self.x_max),
+                0.5 * (self.y_min + self.y_max),
+                0.5 * (self.v_min + self.v_max),
+                0.0,
+            ],
+            state_var=[
+                0.5 * (self.x_max - self.x_min),
+                0.5 * (self.y_max - self.y_min),
+                0.5 * (self.v_max - self.v_min),
+                math.pi,
+            ],
+            value_mean=0.0,
+            value_var=1.0,
+            value_normto=0.02,
+            deepreach_model="exact",
+        )
+
+    def state_test_range(self):
+        return [
+            [self.x_min, self.x_max],
+            [self.y_min, self.y_max],
+            [self.v_min, self.v_max],
+            [self.th_min, self.th_max],
+        ]
+
+    def equivalent_wrapped_state(self, state):
+        wrapped = torch.clone(state)
+        wrapped[..., 3] = (wrapped[..., 3] + math.pi) % (2 * math.pi) - math.pi
+        return wrapped
+
+    def boundary_fn(self, state):
+        dx = torch.abs(state[..., 0] - self.x_center) - self.box_radius_x
+        dy = torch.abs(state[..., 1] - self.y_center) - self.box_radius_y
+        return torch.maximum(dx, dy)
+
+    def sample_target_state(self, num_samples):
+        xs = torch.empty(num_samples).uniform_(
+            self.x_center - self.box_radius_x,
+            self.x_center + self.box_radius_x,
+        )
+        ys = torch.empty(num_samples).uniform_(
+            self.y_center - self.box_radius_y,
+            self.y_center + self.box_radius_y,
+        )
+        vs = torch.empty(num_samples).uniform_(self.v_min, self.v_max)
+        ths = torch.empty(num_samples).uniform_(self.th_min, self.th_max)
+        return torch.stack((xs, ys, vs, ths), dim=-1)
+
+    def cost_fn(self, state_traj):
+        return torch.min(self.boundary_fn(state_traj), dim=-1).values
+
+    def dsdt(self, state, control, disturbance):
+        dsdt = torch.zeros_like(state)
+        dsdt[..., 0] = state[..., 2] * torch.cos(state[..., 3])
+        dsdt[..., 1] = state[..., 2] * torch.sin(state[..., 3])
+        dsdt[..., 2] = control[..., 0]
+        dsdt[..., 3] = state[..., 2] * torch.tan(control[..., 1]) / self.wheelbase
+        return dsdt
+
+    def optimal_control(self, state, dvds):
+        p_v = dvds[..., 2]
+        turn_coeff = dvds[..., 3] * state[..., 2] / self.wheelbase
+
+        if self.set_mode == "avoid":
+            a = torch.where(
+                p_v >= 0.0,
+                torch.full_like(p_v, self.umin_a),
+                torch.full_like(p_v, self.umax_a),
+            )
+            w = torch.where(
+                turn_coeff >= 0.0,
+                torch.full_like(turn_coeff, self.umin_w),
+                torch.full_like(turn_coeff, self.umax_w),
+            )
+        else:
+            a = torch.where(
+                p_v >= 0.0,
+                torch.full_like(p_v, self.umax_a),
+                torch.full_like(p_v, self.umin_a),
+            )
+            w = torch.where(
+                turn_coeff >= 0.0,
+                torch.full_like(turn_coeff, self.umax_w),
+                torch.full_like(turn_coeff, self.umin_w),
+            )
+
+        return torch.stack((a, w), dim=-1)
+
+    def optimal_disturbance(self, state, dvds):
+        return torch.empty(*state.shape[:-1], 0, device=state.device)
+
+    def hamiltonian(self, state, dvds):
+        u = self.optimal_control(state, dvds)
+        f = self.dsdt(state, u, disturbance=None)
+        return torch.sum(dvds * f, dim=-1)
+
+    def plot_config(self):
+        return {
+            "state_slices": [0.0, 2.0, 2.0, 0.0],
+            "state_labels": ["x", "y", "v", "theta"],
+            "x_axis_idx": 0,
+            "y_axis_idx": 1,
+            "z_axis_idx": 2,
+        }
+
 
 #added class for safety project
 class DubinsCar4D(Dynamics):
@@ -355,7 +521,7 @@ class DubinsCar4D(Dynamics):
 
     def plot_config(self):
         return {
-            'state_slices': [0.0, 0.0, (self.v_min + self.v_max)/2.0, 0.0],
+            'state_slices': [getattr(self, 'plot_v', 2.0)],
             'state_labels': ['x', 'y', 'v', r'$\theta$'],
             'x_axis_idx': 0,
             'y_axis_idx': 1,
