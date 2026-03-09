@@ -76,12 +76,16 @@ class Experiment(ABC):
                 ax.set_title('t = %0.2f, %s = %0.2f' % (times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
 
                 #remove normalization for plotting
-                s = ax.imshow(
-                        1*(values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T <= 0),
-                        cmap='bwr',
-                        origin='lower',
-                        extent=(x_min, x_max, y_min, y_max)
-                    )
+                # s = ax.imshow(
+                #         1*(values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T <= 0),
+                #         cmap='bwr',
+                #         origin='lower',
+                #         extent=(x_min, x_max, y_min, y_max)
+                #     )
+
+                #normalized plot
+                s = ax.imshow(1*(values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T <= 0), cmap='bwr', origin='lower', extent=(-1., 1., -1., 1.))
+                
                 fig.colorbar(s) 
         fig.savefig(save_path)
         if self.use_wandb:
