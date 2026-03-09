@@ -287,10 +287,15 @@ class Dubins4DBoxNoDisturbance(Dynamics):
         wrapped[..., 3] = (wrapped[..., 3] + math.pi) % (2 * math.pi) - math.pi
         return wrapped
 
+    # def boundary_fn(self, state):
+    #     dx = torch.abs(state[..., 0] - self.x_center) - self.box_radius_x
+    #     dy = torch.abs(state[..., 1] - self.y_center) - self.box_radius_y
+    #     return torch.maximum(dx, dy)
+
     def boundary_fn(self, state):
-        dx = torch.abs(state[..., 0] - self.x_center) - self.box_radius_x
-        dy = torch.abs(state[..., 1] - self.y_center) - self.box_radius_y
-        return torch.maximum(dx, dy)
+        dx = state[..., 0] - self.x_center
+        dy = state[..., 1] - self.y_center
+        return torch.sqrt(dx**2 + dy**2) - self.box_radius_x
 
     def sample_target_state(self, num_samples):
         xs = torch.empty(num_samples).uniform_(
