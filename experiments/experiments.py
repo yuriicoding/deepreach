@@ -458,10 +458,15 @@ class Experiment(ABC):
                         os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % (epoch+1)))
                     np.savetxt(os.path.join(checkpoints_dir, 'train_losses_epoch_%04d.txt' % (epoch+1)),
                         np.array(train_losses))
-                    self.validate(
-                        device=device, epoch=epoch+1, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)),
-                        x_resolution = val_x_resolution, y_resolution = val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
-
+                    # validate call moved to end of training (runs once only):
+                    # self.validate(
+                    #     device=device, epoch=epoch+1, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)),
+                    #     x_resolution = val_x_resolution, y_resolution = val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
+        # Generate and log validation plot once at the end of training
+        self.validate(
+            device=device, epoch=epochs, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_final.png'),
+            x_resolution=val_x_resolution, y_resolution=val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
+        
         if was_eval:
             self.model.eval()
             self.model.requires_grad_(False)
