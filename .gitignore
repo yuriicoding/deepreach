@@ -133,3 +133,6 @@ wandb
 
 # experiment data
 runs
+
+#vscode settings
+.vscode

@@ -74,7 +74,9 @@ class Experiment(ABC):
                 
                 ax = fig.add_subplot(len(times), len(zs), (j+1) + i*len(zs))
                 ax.set_title('t = %0.2f, %s = %0.2f' % (times[i], plot_config['state_labels'][plot_config['z_axis_idx']], zs[j]))
-                s = ax.imshow(1*(values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T <= 0), cmap='bwr', origin='lower', extent=(-1., 1., -1., 1.))
+                # s = ax.imshow(1*(values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T <= 0), cmap='bwr', origin='lower', extent=(-1., 1., -1., 1.))
+                # vmin=0, vmax=1 ensures empty BRS (all V>0) shows as all-blue instead of all-white
+                s = ax.imshow(1*(values.detach().cpu().numpy().reshape(x_resolution, y_resolution).T <= 0), cmap='bwr', origin='lower', extent=(-1., 1., -1., 1.), vmin=0, vmax=1)
                 fig.colorbar(s) 
         fig.savefig(save_path)
         if self.use_wandb:
