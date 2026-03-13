@@ -541,7 +541,7 @@ class Dubins4D_new(Dynamics):
         wrapped_state[..., 2] = (wrapped_state[..., 2] + math.pi) % (2*math.pi) - math.pi
         return wrapped_state
         
-    # Dubins3D dynamics
+    # Dubins4D dynamics
     # \dot x    = v \cos \theta
     # \dot y    = v \sin \theta
     # \dot \theta = u
@@ -556,10 +556,13 @@ class Dubins4D_new(Dynamics):
         dsdt[..., 3] = control[..., 1]                          # a
         return dsdt
     
+    # def boundary_fn(self, state):
+    #     dx = torch.abs(state[..., 0]) - self.goalR
+    #     dy = torch.abs(state[..., 1]) - self.goalR
+    #     return torch.maximum(dx, dy)
+
     def boundary_fn(self, state):
-        dx = torch.abs(state[..., 0]) - self.goalR
-        dy = torch.abs(state[..., 1]) - self.goalR
-        return torch.maximum(dx, dy)
+        return torch.norm(state[..., :2], dim=-1) - self.goalR
 
     def sample_target_state(self, num_samples):
         raise NotImplementedError

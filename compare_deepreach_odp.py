@@ -1,13 +1,14 @@
 """
 compare_deepreach_odp.py
 Run from the deepreach directory:
-    python compare_deepreach_odp.py --experiment_dir runs/inference
+    python compare_deepreach_odp.py \
+        --checkpoint_path runs/inference/model_epoch_100000.pth
 
 Loads odp_V.npy + odp_comparison_metadata.json (from save_odp_grid.py),
 runs DeepReach inference at every ODP grid point, prints metrics, and saves plots.
 
 Plots (saved to ./brs_comparison_plots/):
-  brs_comparison_theta{X}.png  -- overview grid: rows=time, cols=velocity, fixed theta
+  brs_overview_theta{X}.png    -- grid: rows=time, cols=velocity, fixed theta
   brs_t{k}_tau{t}.png          -- one plot per time step, cols=velocity
 
 Color scheme:
@@ -15,23 +16,11 @@ Color scheme:
   Blue   -- ODP only in BRS
   Red    -- DeepReach only in BRS
   White  -- both agree state is safe
-
-Args:
-  --experiment_dir   path to experiment folder with orig_opt.pickle and checkpoints/
-  --checkpoint       epoch to load (-1 = model_final.pth)
-  --device           cpu or cuda:0
-  --batch_size       inference batch size (reduce if OOM)
-  --odp_V            path to odp_V.npy
-  --odp_meta         path to odp_comparison_metadata.json
-  --theta_fixed      theta (radians) to fix for (x,y) plots  [default: 0]
-  --out_dir          directory to save plots
 """
 
 import argparse
-import inspect
 import json
 import os
-import pickle
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -43,11 +32,33 @@ from utils import modules
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
-parser.add_argument('--experiment_dir', type=str, default='runs/inference')
-parser.add_argument('--checkpoint', type=int, default=-1,
-                    help='Epoch to load (-1 = model_final.pth)')
+# checkpoint
+parser.add_argument('--checkpoint_path', type=str, required=True,
+                    help='Path to the .pth weights file.')
+# model architecture
+parser.add_argument('--num_hl', type=int, default=3,
+                    help='Number of hidden layers.')
+parser.add_argument('--num_nl', type=int, default=512,
+                    help='Number of neurons per hidden layer.')
+parser.add_argument('--model', type=str, default='sine',
+                    choices=['sine', 'tanh', 'sigmoid', 'relu'])
+parser.add_argument('--model_mode', type=str, default='mlp',
+                    choices=['mlp', 'rbf', 'pinn'])
+parser.add_argument('--deepreach_model', type=str, default='exact',
+                    choices=['exact', 'diff', 'vanilla'])
+# dynamics
+parser.add_argument('--dynamics_class', type=str, default='Dubins4D_new')
+parser.add_argument('--goalR', type=float, default=0.25)
+parser.add_argument('--omega_max', type=float, default=0.1)
+parser.add_argument('--accel_max', type=float, default=0.1)
+parser.add_argument('--angle_alpha_factor', type=float, default=1.0)
+parser.add_argument('--velocity_alpha_factor', type=float, default=0.5)
+parser.add_argument('--set_mode', type=str, default='avoid')
+parser.add_argument('--freeze_model', action='store_true', default=False)
+# inference
 parser.add_argument('--device', type=str, default='cpu')
 parser.add_argument('--batch_size', type=int, default=100000)
+# data / output
 parser.add_argument('--odp_V', type=str, default='odp_V.npy')
 parser.add_argument('--odp_meta', type=str, default='odp_comparison_metadata.json')
 parser.add_argument('--theta_fixed', type=float, default=0.0)
@@ -58,7 +69,7 @@ os.makedirs(opt.out_dir, exist_ok=True)
 
 # ── Load ODP data ─────────────────────────────────────────────────────────────
 print("Loading ODP data ...")
-V_odp = np.load(opt.odp_V)                              # (Nx, Ny, Nth, Nv, Ntau)
+V_odp = np.load(opt.odp_V)
 with open(opt.odp_meta) as f:
     meta = json.load(f)
 
@@ -72,74 +83,94 @@ goalR     = meta['dynamics']['goal_R']
 Nx, Ny, Nth, Nv, Ntau = V_odp.shape
 print(f"  ODP grid: ({Nx}, {Ny}, {Nth}, {Nv}, {Ntau})  dtype={V_odp.dtype}")
 
-# ── Load DeepReach model ──────────────────────────────────────────────────────
+# ── Build dynamics ────────────────────────────────────────────────────────────
+print("Building dynamics ...")
+dynamics_class = getattr(dynamics_module, opt.dynamics_class)
+dyn = dynamics_class(
+    goalR=opt.goalR,
+    omega_max=opt.omega_max,
+    accel_max=opt.accel_max,
+    angle_alpha_factor=opt.angle_alpha_factor,
+    velocity_alpha_factor=opt.velocity_alpha_factor,
+    set_mode=opt.set_mode,
+    freeze_model=opt.freeze_model,
+)
+dyn.deepreach_model = opt.deepreach_model
+print(f"  {opt.dynamics_class}  input_dim={dyn.input_dim}  state_dim={dyn.state_dim}")
+
+# ── Build and load model ──────────────────────────────────────────────────────
 print("Loading DeepReach model ...")
-with open(os.path.join(opt.experiment_dir, 'orig_opt.pickle'), 'rb') as f:
-    orig_opt = pickle.load(f)
-
-dynamics_class = getattr(dynamics_module, orig_opt.dynamics_class)
-dyn_kwargs = {
-    k: getattr(orig_opt, k)
-    for k in inspect.signature(dynamics_class).parameters.keys()
-    if k != 'self' and hasattr(orig_opt, k)
-}
-missing = [k for k in inspect.signature(dynamics_class).parameters.keys()
-           if k != 'self' and not hasattr(orig_opt, k)]
-if missing:
-    print(f"  Warning: orig_opt missing params (will use defaults): {missing}")
-dyn = dynamics_class(**dyn_kwargs)
-dyn.deepreach_model = orig_opt.deepreach_model
-
 model = modules.SingleBVPNet(
     in_features=dyn.input_dim, out_features=1,
-    type=orig_opt.model, mode=orig_opt.model_mode,
-    final_layer_factor=1., hidden_features=orig_opt.num_nl,
-    num_hidden_layers=orig_opt.num_hl
+    type=opt.model, mode=opt.model_mode,
+    final_layer_factor=1., hidden_features=opt.num_nl,
+    num_hidden_layers=opt.num_hl
 )
-
-checkpoints_dir = os.path.join(opt.experiment_dir, 'training', 'checkpoints')
-if opt.checkpoint == -1:
-    ckpt_path = os.path.join(checkpoints_dir, 'model_final.pth')
-    model.load_state_dict(torch.load(ckpt_path, map_location=opt.device))
-else:
-    ckpt_path = os.path.join(checkpoints_dir, f'model_epoch_{opt.checkpoint:04d}.pth')
-    model.load_state_dict(torch.load(ckpt_path, map_location=opt.device)['model'])
-
+ckpt = torch.load(opt.checkpoint_path, map_location=opt.device)
+model.load_state_dict(ckpt['model'] if 'model' in ckpt else ckpt)
 model.to(opt.device)
 model.eval()
-print(f"  Loaded: {ckpt_path}")
+print(f"  Loaded: {opt.checkpoint_path}")
 
-# ── Run DeepReach inference on all ODP grid points ────────────────────────────
+# ── Run inference on all ODP grid points ──────────────────────────────────────
 print("Building coordinate array ...")
 XX, YY, THH, VV, TT = np.meshgrid(x_pts, y_pts, theta_pts, v_pts, tau, indexing='ij')
 N = XX.size
 
 coords_np = np.empty((N, 5), dtype=np.float32)
-coords_np[:, 0] = TT.ravel()   # time
-coords_np[:, 1] = XX.ravel()   # x
-coords_np[:, 2] = YY.ravel()   # y
-coords_np[:, 3] = THH.ravel()  # theta
-coords_np[:, 4] = VV.ravel()   # v
+coords_np[:, 0] = TT.ravel()
+coords_np[:, 1] = XX.ravel()
+coords_np[:, 2] = YY.ravel()
+coords_np[:, 3] = THH.ravel()
+coords_np[:, 4] = VV.ravel()
 
 print(f"Running DeepReach inference on {N:,} points ...")
-coords_t  = torch.tensor(coords_np)
+use_cuda = opt.device.startswith('cuda')
+
+# Pin memory enables async CPU→GPU DMA (no effect on CPU)
+coords_t  = torch.tensor(coords_np).pin_memory() if use_cuda else torch.tensor(coords_np)
 V_dr_flat = np.empty(N, dtype=np.float32)
+
+
+if use_cuda:
+    compute_stream = torch.cuda.Stream()
+    transfer_stream = torch.cuda.Stream()
 
 for start in range(0, N, opt.batch_size):
     end = min(start + opt.batch_size, N)
-    batch = coords_t[start:end].to(opt.device)
-    with torch.no_grad():
-        model_input = dyn.coord_to_input(batch)
-        model_out   = model({'coords': model_input})
-        vals = dyn.io_to_value(
-            model_out['model_in'].detach(),
-            model_out['model_out'].squeeze(-1).detach()
-        )
+    if use_cuda:
+        # Overlap host→device transfer with GPU compute from previous batch
+        with torch.cuda.stream(transfer_stream):
+            batch = coords_t[start:end].to(opt.device, non_blocking=True)
+        compute_stream.wait_stream(transfer_stream)
+        with torch.cuda.stream(compute_stream):
+            with torch.no_grad():
+                model_input = dyn.coord_to_input(batch)
+                model_out   = model({'coords': model_input})
+                vals = dyn.io_to_value(
+                    model_out['model_in'].detach(),
+                    model_out['model_out'].squeeze(-1).detach()
+                )
+        torch.cuda.current_stream().wait_stream(compute_stream)
+    else:
+        with torch.no_grad():
+            batch       = coords_t[start:end]
+            model_input = dyn.coord_to_input(batch)
+            model_out   = model({'coords': model_input})
+            vals = dyn.io_to_value(
+                model_out['model_in'].detach(),
+                model_out['model_out'].squeeze(-1).detach()
+            )
     V_dr_flat[start:end] = vals.cpu().numpy()
     print(f"  {end:>10,} / {N:,}", end='\r')
 
 print()
 V_dr = V_dr_flat.reshape(Nx, Ny, Nth, Nv, Ntau).astype(np.float64)
+
+# ── Save DeepReach value function ─────────────────────────────────────────────
+dr_npy = os.path.join(os.path.dirname(opt.odp_V), 'dr_V.npy')
+np.save(dr_npy, V_dr)
+print(f"Saved DeepReach V: {dr_npy}  shape={V_dr.shape}  dtype={V_dr.dtype}")
 
 # ── BRS membership masks ──────────────────────────────────────────────────────
 in_odp   = V_odp <= 0
@@ -154,11 +185,8 @@ pct_both     = 100.0 * both.sum()     / total
 pct_odp_only = 100.0 * odp_only.sum() / total
 pct_dr_only  = 100.0 * dr_only.sum()  / total
 pct_disagree = pct_odp_only + pct_dr_only
-
-V_odp_f = V_odp.ravel()
-V_dr_f  = V_dr.ravel()
-mae      = np.mean(np.abs(V_dr_f  - V_odp_f))
-rmse     = np.sqrt(np.mean((V_dr_f - V_odp_f) ** 2))
+mae  = np.mean(np.abs(V_dr.ravel()  - V_odp.ravel()))
+rmse = np.sqrt(np.mean((V_dr.ravel() - V_odp.ravel()) ** 2))
 
 print("\n── Overall metrics ──────────────────────────────────────────────────────")
 print(f"  MAE                        : {mae:.5f}")
@@ -172,9 +200,9 @@ print("\n── Per time step ────────────────�
 print(f"  {'t':>6}  {'MAE':>8}  {'RMSE':>8}  {'disagree%':>10}  {'ODP_only%':>10}  {'DR_only%':>9}")
 print("  " + "-" * 60)
 for itau, t in enumerate(tau):
-    n   = Nx * Ny * Nth * Nv
-    vo  = V_odp[..., itau].ravel()
-    vd  = V_dr[...,  itau].ravel()
+    n  = Nx * Ny * Nth * Nv
+    vo = V_odp[..., itau].ravel()
+    vd = V_dr[...,  itau].ravel()
     print(f"  {t:6.3f}  "
           f"{np.mean(np.abs(vd-vo)):8.5f}  "
           f"{np.sqrt(np.mean((vd-vo)**2)):8.5f}  "
@@ -182,12 +210,12 @@ for itau, t in enumerate(tau):
           f"{100.0*odp_only[...,itau].sum()/n:10.2f}  "
           f"{100.0*dr_only[...,itau].sum()/n:9.2f}")
 
-# ── Plotting helpers ──────────────────────────────────────────────────────────
+# ── Plotting ──────────────────────────────────────────────────────────────────
 COLORS = {
-    'both':     [0.55, 0.00, 0.75],   # purple
-    'odp_only': [0.10, 0.45, 0.85],   # blue
-    'dr_only':  [0.90, 0.20, 0.20],   # red
-    'safe':     [1.00, 1.00, 1.00],   # white
+    'both':     [0.55, 0.00, 0.75],
+    'odp_only': [0.10, 0.45, 0.85],
+    'dr_only':  [0.90, 0.20, 0.20],
+    'safe':     [1.00, 1.00, 1.00],
 }
 legend_handles = [
     mpatches.Patch(color=COLORS['both'],     label='Both in BRS'),
@@ -201,7 +229,6 @@ theta_val = theta_pts[ith_fixed]
 extent    = [x_pts[0], x_pts[-1], y_pts[0], y_pts[-1]]
 
 def make_rgb(b, oo, dr):
-    """Build (Nx, Ny, 3) RGB image from boolean masks."""
     rgb = np.ones((*b.shape, 3))
     rgb[b,  :] = COLORS['both']
     rgb[oo, :] = COLORS['odp_only']
@@ -214,16 +241,15 @@ def add_target(ax):
         linewidth=1.5, edgecolor='black', facecolor='none', linestyle='--'
     ))
 
-v_indices    = np.linspace(0, Nv    - 1, min(5, Nv),   dtype=int)
-time_indices = np.linspace(0, Ntau  - 1, min(4, Ntau), dtype=int)
+v_indices    = np.linspace(0, Nv   - 1, min(5, Nv),   dtype=int)
+time_indices = np.linspace(0, Ntau - 1, min(4, Ntau), dtype=int)
 
-# ── Plot 1: overview grid (rows=time, cols=velocity) ─────────────────────────
+# Overview grid: rows=time, cols=velocity
 print(f"\nSaving overview plot (theta={theta_val:.2f} rad) ...")
 n_rows, n_cols = len(time_indices), len(v_indices)
 fig, axes = plt.subplots(n_rows, n_cols,
                          figsize=(3.5 * n_cols, 3.2 * n_rows),
                          squeeze=False)
-
 for ri, itau in enumerate(time_indices):
     for ci, iv in enumerate(v_indices):
         rgb = make_rgb(both    [:, :, ith_fixed, iv, itau],
@@ -249,7 +275,7 @@ plt.savefig(out_path, dpi=120, bbox_inches='tight')
 plt.close()
 print(f"  Saved: {out_path}")
 
-# ── Plot 2: one image per time step ──────────────────────────────────────────
+# One plot per time step
 print("Saving per-time-step plots ...")
 for itau in range(Ntau):
     fig2, axes2 = plt.subplots(1, n_cols, figsize=(3.5 * n_cols, 3.5), squeeze=False)
@@ -258,7 +284,6 @@ for itau in range(Ntau):
         oo = odp_only[:, :, ith_fixed, iv, itau]
         dr = dr_only [:, :, ith_fixed, iv, itau]
         d_pct = 100.0 * (oo.sum() + dr.sum()) / (Nx * Ny)
-
         ax = axes2[0][ci]
         ax.imshow(make_rgb(b, oo, dr).transpose(1, 0, 2),
                   origin='lower', extent=extent, aspect='equal')

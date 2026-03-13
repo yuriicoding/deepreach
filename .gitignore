@@ -133,7 +133,10 @@ wandb
 
 # experiment data
 runs
+odp_comparison_metadata.json
 odp_V.npy
+dr_V.npy
+brs_comparison_plots*
 
 #vscode settings
 .vscode
