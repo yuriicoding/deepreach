@@ -133,6 +133,7 @@ wandb
 
 # experiment data
 runs
+odp_V.npy
 
 #vscode settings
 .vscode
