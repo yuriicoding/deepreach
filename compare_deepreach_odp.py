@@ -78,11 +78,16 @@ with open(os.path.join(opt.experiment_dir, 'orig_opt.pickle'), 'rb') as f:
     orig_opt = pickle.load(f)
 
 dynamics_class = getattr(dynamics_module, orig_opt.dynamics_class)
-dyn = dynamics_class(**{
+dyn_kwargs = {
     k: getattr(orig_opt, k)
     for k in inspect.signature(dynamics_class).parameters.keys()
-    if k != 'self'
-})
+    if k != 'self' and hasattr(orig_opt, k)
+}
+missing = [k for k in inspect.signature(dynamics_class).parameters.keys()
+           if k != 'self' and not hasattr(orig_opt, k)]
+if missing:
+    print(f"  Warning: orig_opt missing params (will use defaults): {missing}")
+dyn = dynamics_class(**dyn_kwargs)
 dyn.deepreach_model = orig_opt.deepreach_model
 
 model = modules.SingleBVPNet(
