@@ -1,5 +1,6 @@
 import wandb
 import torch
+import torch.distributed as dist
 import os
 import shutil
 import time
@@ -13,6 +14,7 @@ import scipy.io as spio
 
 from abc import ABC, abstractmethod
 from torch.utils.data import DataLoader
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 from collections import OrderedDict
@@ -28,22 +30,33 @@ class Experiment(ABC):
         self.experiment_dir = experiment_dir
         self.use_wandb = use_wandb
 
+    def _is_distributed(self):
+        return dist.is_available() and dist.is_initialized()
+
+    def _is_main_process(self):
+        return (not self._is_distributed()) or dist.get_rank() == 0
+
+    def _model_for_io(self):
+        return self.model.module if isinstance(self.model, DDP) else self.model
+
     @abstractmethod
     def init_special(self):
         raise NotImplementedError
 
     def _load_checkpoint(self, epoch):
+        model = self._model_for_io()
         if epoch == -1:
             model_path = os.path.join(self.experiment_dir, 'training', 'checkpoints', 'model_final.pth')
-            self.model.load_state_dict(torch.load(model_path))
+            model.load_state_dict(torch.load(model_path, map_location='cpu'))
         else:
             model_path = os.path.join(self.experiment_dir, 'training', 'checkpoints', 'model_epoch_%04d.pth' % epoch)
-            self.model.load_state_dict(torch.load(model_path)['model'])
+            model.load_state_dict(torch.load(model_path, map_location='cpu')['model'])
 
     def validate(self, device, epoch, save_path, x_resolution, y_resolution, z_resolution, time_resolution):
-        was_training = self.model.training
-        self.model.eval()
-        self.model.requires_grad_(False)
+        model = self._model_for_io()
+        was_training = model.training
+        model.eval()
+        model.requires_grad_(False)
 
         plot_config = self.dataset.dynamics.plot_config()
 
@@ -69,7 +82,7 @@ class Experiment(ABC):
                 coords[:, 1 + plot_config['z_axis_idx']] = zs[j]
 
                 with torch.no_grad():
-                    model_results = self.model({'coords': self.dataset.dynamics.coord_to_input(coords.to(device))})
+                    model_results = model({'coords': self.dataset.dynamics.coord_to_input(coords.to(device))})
                     values = self.dataset.dynamics.io_to_value(model_results['model_in'].detach(), model_results['model_out'].squeeze(dim=-1).detach())
                 
                 ax = fig.add_subplot(len(times), len(zs), (j+1) + i*len(zs))
@@ -87,8 +100,8 @@ class Experiment(ABC):
         plt.close()
 
         if was_training:
-            self.model.train()
-            self.model.requires_grad_(True)
+            model.train()
+            model.requires_grad_(True)
     
     def train(
             self, device, batch_size, epochs, lr, 
@@ -100,6 +113,13 @@ class Experiment(ABC):
         was_eval = not self.model.training
         self.model.train()
         self.model.requires_grad_(True)
+
+        if self._is_distributed() and not isinstance(self.model, DDP):
+            self.model = DDP(
+                self.model,
+                device_ids=[torch.cuda.current_device()],
+                output_device=torch.cuda.current_device(),
+            )
 
         train_dataloader = DataLoader(self.dataset, shuffle=True, batch_size=batch_size, pin_memory=True, num_workers=0)
 
@@ -114,21 +134,23 @@ class Experiment(ABC):
         training_dir = os.path.join(self.experiment_dir, 'training')
         
         summaries_dir = os.path.join(training_dir, 'summaries')
-        if not os.path.exists(summaries_dir):
-            os.makedirs(summaries_dir)
-
         checkpoints_dir = os.path.join(training_dir, 'checkpoints')
-        if not os.path.exists(checkpoints_dir):
-            os.makedirs(checkpoints_dir)
+        if self._is_main_process():
+            if not os.path.exists(summaries_dir):
+                os.makedirs(summaries_dir)
+            if not os.path.exists(checkpoints_dir):
+                os.makedirs(checkpoints_dir)
+        if self._is_distributed():
+            dist.barrier()
 
-        writer = SummaryWriter(summaries_dir)
+        writer = SummaryWriter(summaries_dir) if self._is_main_process() else None
 
         total_steps = 0
 
         if adjust_relative_grads:
             new_weight = 1
 
-        with tqdm(total=len(train_dataloader) * epochs) as pbar:
+        with tqdm(total=len(train_dataloader) * epochs, disable=not self._is_main_process()) as pbar:
             train_losses = []
             last_CSL_epoch = -1
             for epoch in range(0, epochs):
@@ -217,7 +239,8 @@ class Experiment(ABC):
                             den = torch.mean(torch.abs(grads_dirichlet))
                             new_weight = 0.9*new_weight + 0.1*num/den
                             losses['dirichlet'] = new_weight*losses['dirichlet']
-                        writer.add_scalar('weight_scaling', new_weight, total_steps)
+                        if writer is not None:
+                            writer.add_scalar('weight_scaling', new_weight, total_steps)
 
                     # import ipdb; ipdb.set_trace()
 
@@ -225,17 +248,19 @@ class Experiment(ABC):
                     for loss_name, loss in losses.items():
                         single_loss = loss.mean()
 
-                        if loss_name == 'dirichlet':
-                            writer.add_scalar(loss_name, single_loss/new_weight, total_steps)
-                        else:
-                            writer.add_scalar(loss_name, single_loss, total_steps)
+                        if writer is not None:
+                            if loss_name == 'dirichlet':
+                                writer.add_scalar(loss_name, single_loss/new_weight, total_steps)
+                            else:
+                                writer.add_scalar(loss_name, single_loss, total_steps)
                         train_loss += single_loss
 
                     train_losses.append(train_loss.item())
-                    writer.add_scalar("total_train_loss", train_loss, total_steps)
+                    if writer is not None:
+                        writer.add_scalar("total_train_loss", train_loss, total_steps)
 
-                    if not total_steps % steps_til_summary:
-                        torch.save(self.model.state_dict(),
+                    if (not total_steps % steps_til_summary) and self._is_main_process():
+                        torch.save(self._model_for_io().state_dict(),
                                 os.path.join(checkpoints_dir, 'model_current.pth'))
                         # summary_fn(model, model_input, gt, model_output, writer, total_steps)
 
@@ -253,7 +278,7 @@ class Experiment(ABC):
 
                     pbar.update(1)
 
-                    if not total_steps % steps_til_summary:
+                    if (not total_steps % steps_til_summary) and self._is_main_process():
                         tqdm.write("Epoch %d, Total loss %0.6f, iteration time %0.6f" % (epoch, train_loss.detach().item(), time.time() - start_time))
                         if self.use_wandb:
                             wandb.log({
@@ -451,19 +476,24 @@ class Experiment(ABC):
                             break
 
                 if not (epoch+1) % epochs_til_checkpoint:
-                    # Saving the optimizer state is important to produce consistent results
-                    checkpoint = { 
-                        'epoch': epoch+1,
-                        'model': self.model.state_dict(),
-                        'optimizer': optim.state_dict()}
-                    torch.save(checkpoint,
-                        os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % (epoch+1)))
-                    np.savetxt(os.path.join(checkpoints_dir, 'train_losses_epoch_%04d.txt' % (epoch+1)),
-                        np.array(train_losses))
-                    # validate call moved to end of training (runs once only):
-                    self.validate(
-                        device=device, epoch=epoch+1, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)),
-                        x_resolution = val_x_resolution, y_resolution = val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
+                    if self._is_distributed():
+                        dist.barrier()
+                    if self._is_main_process():
+                        # Saving the optimizer state is important to produce consistent results
+                        checkpoint = {
+                            'epoch': epoch+1,
+                            'model': self._model_for_io().state_dict(),
+                            'optimizer': optim.state_dict()}
+                        torch.save(checkpoint,
+                            os.path.join(checkpoints_dir, 'model_epoch_%04d.pth' % (epoch+1)))
+                        np.savetxt(os.path.join(checkpoints_dir, 'train_losses_epoch_%04d.txt' % (epoch+1)),
+                            np.array(train_losses))
+                        # validate call moved to end of training (runs once only):
+                        self.validate(
+                            device=device, epoch=epoch+1, save_path=os.path.join(checkpoints_dir, 'BRS_validation_plot_epoch_%04d.png' % (epoch+1)),
+                            x_resolution = val_x_resolution, y_resolution = val_y_resolution, z_resolution=val_z_resolution, time_resolution=val_time_resolution)
+                    if self._is_distributed():
+                        dist.barrier()
 
         # Generate and log validation plot once at the end of training
         # self.validate(

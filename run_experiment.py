@@ -2,6 +2,7 @@ import configargparse
 import inspect
 import os
 import torch
+import torch.distributed as dist
 import shutil
 import random
 import numpy as np
@@ -115,6 +116,20 @@ if (mode == 'all') or (mode == 'test'):
 
 opt = p.parse_args()
 
+distributed = int(os.environ.get('WORLD_SIZE', '1')) > 1
+rank = int(os.environ.get('RANK', '0'))
+local_rank = int(os.environ.get('LOCAL_RANK', '0'))
+
+if distributed:
+    if not torch.cuda.is_available():
+        raise RuntimeError('Distributed training requires CUDA.')
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend='nccl', init_method='env://')
+    opt.device = f'cuda:{local_rank}'
+
+is_main_process = rank == 0
+use_wandb = use_wandb and is_main_process
+
 # start wandb
 if use_wandb:
     wandb.init(
@@ -128,13 +143,26 @@ if use_wandb:
 experiment_dir = os.path.join(opt.experiments_dir, opt.experiment_name)
 if (mode == 'all') or (mode == 'train'):
     # create experiment dir
+    should_overwrite = True
     if os.path.exists(experiment_dir):
-        overwrite = input("The experiment directory %s already exists. Overwrite? (y/n)"%experiment_dir)
-        if not (overwrite == 'y'):
+        if is_main_process:
+            overwrite = input("The experiment directory %s already exists. Overwrite? (y/n)"%experiment_dir)
+            should_overwrite = overwrite == 'y'
+        if distributed:
+            shared_decision = [should_overwrite]
+            dist.broadcast_object_list(shared_decision, src=0)
+            should_overwrite = shared_decision[0]
+        if not should_overwrite:
             print('Exiting.')
-            quit()
-        shutil.rmtree(experiment_dir)     
-    os.makedirs(experiment_dir)
+            if distributed:
+                dist.destroy_process_group()
+            raise SystemExit(0)
+        if is_main_process:
+            shutil.rmtree(experiment_dir)
+    if is_main_process:
+        os.makedirs(experiment_dir)
+    if distributed:
+        dist.barrier()
 elif mode == 'test':
     # confirm that experiment dir already exists
     if not os.path.exists(experiment_dir):
@@ -142,9 +170,10 @@ elif mode == 'test':
 
 current_time = datetime.now()
 # log current config
-with open(os.path.join(experiment_dir, 'config_%s.txt' % current_time.strftime('%m_%d_%Y_%H_%M')), 'w') as f:
-    for arg, val in vars(opt).items():
-        f.write(arg + ' = ' + str(val) + '\n')
+if is_main_process:
+    with open(os.path.join(experiment_dir, 'config_%s.txt' % current_time.strftime('%m_%d_%Y_%H_%M')), 'w') as f:
+        for arg, val in vars(opt).items():
+            f.write(arg + ' = ' + str(val) + '\n')
 
 if (mode == 'all') or (mode == 'train'):
     # set counter_end appropriately if needed
@@ -152,8 +181,12 @@ if (mode == 'all') or (mode == 'train'):
         opt.counter_end = opt.num_epochs
 
     # log original options
-    with open(os.path.join(experiment_dir, 'orig_opt.pickle'), 'wb') as opt_file:
-        pickle.dump(opt, opt_file)
+    if is_main_process:
+        with open(os.path.join(experiment_dir, 'orig_opt.pickle'), 'wb') as opt_file:
+            pickle.dump(opt, opt_file)
+
+if distributed:
+    dist.barrier()
 
 # load original experiment settings
 with open(os.path.join(experiment_dir, 'orig_opt.pickle'), 'rb') as opt_file:
@@ -172,11 +205,18 @@ dataset = dataio.ReachabilityDataset(
     pretrain=orig_opt.pretrain, pretrain_iters=orig_opt.pretrain_iters, 
     tMin=orig_opt.tMin, tMax=orig_opt.tMax, 
     counter_start=orig_opt.counter_start, counter_end=orig_opt.counter_end, 
-    num_src_samples=orig_opt.num_src_samples, num_target_samples=orig_opt.num_target_samples)
+    num_src_samples=orig_opt.num_src_samples, num_target_samples=orig_opt.num_target_samples,
+    seed=orig_opt.seed, rank=rank, world_size=int(os.environ.get('WORLD_SIZE', '1')))
 
 model = modules.SingleBVPNet(in_features=dynamics.input_dim, out_features=1, type=orig_opt.model, mode=orig_opt.model_mode,
                              final_layer_factor=1., hidden_features=orig_opt.num_nl, num_hidden_layers=orig_opt.num_hl)
 model.to(opt.device)
+
+if distributed:
+    # Keep model initialization identical across ranks, then decorrelate per-rank sampling.
+    torch.manual_seed(orig_opt.seed + rank)
+    random.seed(orig_opt.seed + rank)
+    np.random.seed(orig_opt.seed + rank)
 
 experiment_class = getattr(experiments, orig_opt.experiment_class)
 experiment = experiment_class(model=model, dataset=dataset, experiment_dir=experiment_dir, use_wandb=use_wandb)
@@ -203,3 +243,7 @@ if (mode == 'all') or (mode == 'test'):
         checkpoint_toload=opt.checkpoint_toload, dt=opt.dt,
         num_scenarios=opt.num_scenarios, num_violations=opt.num_violations, 
         set_type='BRT' if orig_opt.minWith in ['zero', 'target'] else 'BRS', control_type=opt.control_type, data_step=opt.data_step)
+
+if distributed:
+    dist.barrier()
+    dist.destroy_process_group()
