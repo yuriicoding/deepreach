@@ -510,7 +510,6 @@ class Dubins4D_new(Dynamics):
     def __init__(
         self,
         set_mode:str='avoid',
-        deepreach_model:str='exact',
         x_min:float=-3.0,
         x_max:float=3.0,
         y_min:float=-1.0,
@@ -567,7 +566,7 @@ class Dubins4D_new(Dynamics):
             value_mean=0.0,
             value_var=1.0,
             value_normto=0.02,
-            deepreach_model=deepreach_model
+            deepreach_model="exact"
         )
 
     def state_test_range(self):
