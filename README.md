@@ -1,7 +1,10 @@
-Command to run lunas dynamics on many gpus (dynamics is in dubins4d_new class), default set_mode is avoid and deepreach_model is exact:
+Command to run lunas dynamics on many gpus (dynamics is in dubins4d_new class), default set_mode is avoid and deepreach_model is exact, n - number of gpus per node:
 
-python run_experiment.py --mode train --experiment_name dubins4d_new_run --experiment_class DeepReach --dynamics_class Dubins4D_new --minWith target
+torchrun --standalone --nproc_per_node=4 run_experiment.py --mode train --experiment_name dubins4d_new_run --experiment_class DeepReach --dynamics_class Dubins4D_new --minWith target
 
+to run without saving intermediate models (speeds up training):
+
+torchrun --standalone --nproc_per_node=4 run_experiment.py --mode train --experiment_name dubins4d_new_run --experiment_class DeepReach --dynamics_class Dubins4D_new --minWith target --steps_til_summary 100000000 --epochs_til_ckpt 100000000
 
 # DeepReach: A Deep Learning Approach to High-Dimensional Reachability
 ### [Project Page](http://people.eecs.berkeley.edu/~somil/index.html) | [Paper](https://arxiv.org/pdf/2011.02082.pdf)<br>
