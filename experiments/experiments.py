@@ -176,11 +176,38 @@ class Experiment(ABC):
                         reach_values = gt['reach_values']
                         avoid_values = gt['avoid_values']
                     dirichlet_masks = gt['dirichlet_masks']
+                    guidance_kwargs = {}
+                    if 'guidance_mask' in gt:
+                        guidance_kwargs = {
+                            'guidance_mask': gt['guidance_mask'],
+                            'guidance_vhat': gt['guidance_vhat'],
+                            'guidance_weight': gt['guidance_weight'],
+                        }
 
                     if self.dataset.dynamics.loss_type == 'brt_hjivi':
-                        losses = loss_fn(states, values, dvs[..., 0], dvs[..., 1:], boundary_values, dirichlet_masks, model_results['model_out'])
+                        losses = loss_fn(
+                            states,
+                            values,
+                            dvs[..., 0],
+                            dvs[..., 1:],
+                            boundary_values,
+                            dirichlet_masks,
+                            model_results['model_out'],
+                            **guidance_kwargs,
+                        )
                     elif self.dataset.dynamics.loss_type == 'brat_hjivi':
-                        losses = loss_fn(states, values, dvs[..., 0], dvs[..., 1:], boundary_values, reach_values, avoid_values, dirichlet_masks, model_results['model_out'])
+                        losses = loss_fn(
+                            states,
+                            values,
+                            dvs[..., 0],
+                            dvs[..., 1:],
+                            boundary_values,
+                            reach_values,
+                            avoid_values,
+                            dirichlet_masks,
+                            model_results['model_out'],
+                            **guidance_kwargs,
+                        )
                     else:
                         raise NotImplementedError
                     

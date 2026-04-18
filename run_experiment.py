@@ -1,6 +1,7 @@
 import configargparse
 import inspect
 import os
+from pathlib import Path
 import torch
 import torch.distributed as dist
 import shutil
@@ -73,6 +74,9 @@ if (mode == 'all') or (mode == 'train'):
     p.add_argument('--use_lbfgs', default=False, type=bool, help='use L-BFGS.')
     p.add_argument('--adj_rel_grads', default=True, type=bool, help='adjust the relative magnitude of the losses')
     p.add_argument('--dirichlet_loss_divisor', default=1.0, required=False, type=float, help='What to divide the dirichlet loss by for loss reweighting')
+    p.add_argument('--use_vhat_guidance', default=False, action='store_true', help='Enable radius-gated v_hat guidance using repo-root artifacts.')
+    p.add_argument('--gt_radius', type=float, default=0.05, required=False, help='Support radius in normalized grid-cell coordinates for activating v_hat guidance.')
+    p.add_argument('--close_gap_scale', type=float, default=0.1, required=False, help='Scale applied to close_value_gap when converting it into v_hat supervision weight.')
 
     # cost-supervised learning (CSL) options
     p.add_argument('--use_CSL', default=False, action='store_true', help='use cost-supervised learning (CSL)')
@@ -210,7 +214,14 @@ dataset = dataio.ReachabilityDataset(
     tMin=orig_opt.tMin, tMax=orig_opt.tMax, 
     counter_start=orig_opt.counter_start, counter_end=orig_opt.counter_end, 
     num_src_samples=orig_opt.num_src_samples, num_target_samples=orig_opt.num_target_samples,
-    seed=orig_opt.seed, rank=rank, world_size=int(os.environ.get('WORLD_SIZE', '1')))
+    seed=orig_opt.seed,
+    rank=rank,
+    world_size=int(os.environ.get('WORLD_SIZE', '1')),
+    use_vhat_guidance=orig_opt.use_vhat_guidance,
+    gt_radius=orig_opt.gt_radius,
+    close_gap_scale=orig_opt.close_gap_scale,
+    repo_root=Path(__file__).resolve().parent,
+)
 
 model = modules.SingleBVPNet(in_features=dynamics.input_dim, out_features=1, type=orig_opt.model, mode=orig_opt.model_mode,
                              final_layer_factor=1., hidden_features=orig_opt.num_nl, num_hidden_layers=orig_opt.num_hl)
@@ -228,9 +239,19 @@ experiment.init_special(**{argname: getattr(orig_opt, argname) for argname in in
 
 if (mode == 'all') or (mode == 'train'):
     if dynamics.loss_type == 'brt_hjivi':
-        loss_fn = losses.init_brt_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.dirichlet_loss_divisor)
+        loss_fn = losses.init_brt_hjivi_loss(
+            dynamics,
+            orig_opt.minWith,
+            orig_opt.dirichlet_loss_divisor,
+            use_vhat_guidance=orig_opt.use_vhat_guidance,
+        )
     elif dynamics.loss_type == 'brat_hjivi':
-        loss_fn = losses.init_brat_hjivi_loss(dynamics, orig_opt.minWith, orig_opt.dirichlet_loss_divisor)
+        loss_fn = losses.init_brat_hjivi_loss(
+            dynamics,
+            orig_opt.minWith,
+            orig_opt.dirichlet_loss_divisor,
+            use_vhat_guidance=orig_opt.use_vhat_guidance,
+        )
     else:
         raise NotImplementedError
     experiment.train(
