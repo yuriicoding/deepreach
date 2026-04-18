@@ -9,7 +9,7 @@ torchrun --standalone --nproc_per_node=4 run_experiment.py --mode train --experi
 
 to run with ground truth plave v_hat_all.npy - ground truth points; v_direct_all.npy - difference between V functions of decomposed systems; artifact_manifest.json - info about npy files in the root folder of the directory, and run the following command:
 
-torchrun --standalone --nproc_per_node=4 run_experiment.py --mode train --experiment_name dubins4d_new_run --experiment_class DeepReach --dynamics_class Dubins4D_new --minWith target --steps_til_summary 100000000 --epochs_til_ckpt 100000000 --use_vhat_guidance --gt_radius 0.05 --corner_center_quantile 0.005
+torchrun --standalone --nproc_per_node=4 run_experiment.py --mode train --experiment_name dubins4d_new_run --experiment_class DeepReach --dynamics_class Dubins4D_new --minWith target --steps_til_summary 100000000 --epochs_til_ckpt 100000000 --use_vhat_guidance --gt_radius 0.05 --close_gap_scale 0.1
 
 
 --use_vhat_guidance
