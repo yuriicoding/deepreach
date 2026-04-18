@@ -507,96 +507,132 @@ class Dubins3D(Dynamics):
 
 #new Dubins4D
 class Dubins4D_new(Dynamics):
-    def __init__(self, goalR:float, omega_max:float, accel_max:float, angle_alpha_factor:float, velocity_alpha_factor:float, set_mode:str, freeze_model: bool):
-        self.goalR = goalR
-        self.omega_max = omega_max
-        self.accel_max = accel_max
-        self.angle_alpha_factor = angle_alpha_factor
-        self.velocity_alpha_factor = velocity_alpha_factor
-        self.freeze_model = freeze_model
+    def __init__(
+        self,
+        set_mode:str='avoid',
+        deepreach_model:str='exact',
+        x_min:float=-3.0,
+        x_max:float=3.0,
+        y_min:float=-1.0,
+        y_max:float=4.0,
+        v_min:float=0.0,
+        v_max:float=4.0,
+        th_min:float=-math.pi,
+        th_max:float=math.pi,
+        x_center:float=0.0,
+        y_center:float=2.0,
+        box_radius_x:float=0.8,
+        box_radius_y:float=0.8,
+        umin_a:float=-1.5,
+        umax_a:float=1.5,
+        umin_w:float=-math.pi/18.0,
+        umax_w:float=math.pi/18.0,
+        wheelbase:float=0.3,
+    ):
+        self.x_min = x_min
+        self.x_max = x_max
+        self.y_min = y_min
+        self.y_max = y_max
+        self.v_min = v_min
+        self.v_max = v_max
+        self.th_min = th_min
+        self.th_max = th_max
+        self.x_center = x_center
+        self.y_center = y_center
+        self.box_radius_x = box_radius_x
+        self.box_radius_y = box_radius_y
+        self.umin_a = umin_a
+        self.umax_a = umax_a
+        self.umin_w = umin_w
+        self.umax_w = umax_w
+        self.wheelbase = wheelbase
         super().__init__(
             loss_type='brt_hjivi', set_mode=set_mode,
             state_dim=4,
             input_dim=5,
             control_dim=2,
             disturbance_dim=0,
-            state_mean=[0, 0, 0, 0.5],
-            state_var=[1, 1, self.angle_alpha_factor*math.pi, self.velocity_alpha_factor],
-            value_mean=0.25, 
-            value_var=0.5, 
+            state_mean=[
+                0.5 * (self.x_min + self.x_max),
+                0.5 * (self.y_min + self.y_max),
+                0.5 * (self.v_min + self.v_max),
+                0.0,
+            ],
+            state_var=[
+                0.5 * (self.x_max - self.x_min),
+                0.5 * (self.y_max - self.y_min),
+                0.5 * (self.v_max - self.v_min),
+                math.pi,
+            ],
+            value_mean=0.0,
+            value_var=1.0,
             value_normto=0.02,
-            deepreach_model="exact"
+            deepreach_model=deepreach_model
         )
 
     def state_test_range(self):
         return [
-            [-1, 1],
-            [-1, 1],
-            [-math.pi, math.pi],
-            [0, 1],
+            [self.x_min, self.x_max],
+            [self.y_min, self.y_max],
+            [self.v_min, self.v_max],
+            [self.th_min, self.th_max],
         ]
 
     def equivalent_wrapped_state(self, state):
         wrapped_state = torch.clone(state)
-        wrapped_state[..., 2] = (wrapped_state[..., 2] + math.pi) % (2*math.pi) - math.pi
+        wrapped_state[..., 3] = (wrapped_state[..., 3] + math.pi) % (2*math.pi) - math.pi
         return wrapped_state
-        
-    # Dubins3D dynamics
-    # \dot x    = v \cos \theta
-    # \dot y    = v \sin \theta
-    # \dot \theta = u
-    # \dot v    = a
+
+    # state = [x, y, v, theta], control = [a, w]
     def dsdt(self, state, control, disturbance):
-        if self.freeze_model:
-            raise NotImplementedError
         dsdt = torch.zeros_like(state)
-        dsdt[..., 0] = state[..., 3]*torch.cos(state[..., 2])  # v is now state[..., 3]
-        dsdt[..., 1] = state[..., 3]*torch.sin(state[..., 2])
-        dsdt[..., 2] = control[..., 0]                          # ω
-        dsdt[..., 3] = control[..., 1]                          # a
+        dsdt[..., 0] = state[..., 2] * torch.cos(state[..., 3])
+        dsdt[..., 1] = state[..., 2] * torch.sin(state[..., 3])
+        dsdt[..., 2] = control[..., 0]
+        dsdt[..., 3] = state[..., 2] * torch.tan(control[..., 1]) / self.wheelbase
         return dsdt
     
     def boundary_fn(self, state):
-        dx = torch.abs(state[..., 0]) - self.goalR
-        dy = torch.abs(state[..., 1]) - self.goalR
+        dx = torch.abs(state[..., 0] - self.x_center) - self.box_radius_x
+        dy = torch.abs(state[..., 1] - self.y_center) - self.box_radius_y
         return torch.maximum(dx, dy)
 
     def sample_target_state(self, num_samples):
-        raise NotImplementedError
+        xs = torch.empty(num_samples).uniform_(self.x_center - self.box_radius_x, self.x_center + self.box_radius_x)
+        ys = torch.empty(num_samples).uniform_(self.y_center - self.box_radius_y, self.y_center + self.box_radius_y)
+        vs = torch.empty(num_samples).uniform_(self.v_min, self.v_max)
+        th = torch.empty(num_samples).uniform_(self.th_min, self.th_max)
+        return torch.stack((xs, ys, vs, th), dim=-1)
     
     def cost_fn(self, state_traj):
         return torch.min(self.boundary_fn(state_traj), dim=-1).values
     
     def hamiltonian(self, state, dvds):
-        if self.freeze_model:
-            raise NotImplementedError
-        if self.set_mode == 'reach':
-            return state[..., 3]*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) \
-                - self.omega_max * torch.abs(dvds[..., 2]) \
-                - self.accel_max * torch.abs(dvds[..., 3])
-        elif self.set_mode == 'avoid':
-            return state[..., 3]*(torch.cos(state[..., 2]) * dvds[..., 0] + torch.sin(state[..., 2]) * dvds[..., 1]) \
-                + self.omega_max * torch.abs(dvds[..., 2]) \
-                + self.accel_max * torch.abs(dvds[..., 3])
+        u = self.optimal_control(state, dvds)
+        return torch.sum(dvds * self.dsdt(state, u, disturbance=0), dim=-1)
 
     def optimal_control(self, state, dvds):
-        if self.set_mode == 'reach':
-            return torch.stack([-self.omega_max*torch.sign(dvds[..., 2]),
-                                -self.accel_max*torch.sign(dvds[..., 3])], dim=-1)
-        elif self.set_mode == 'avoid':
-            return torch.stack([self.omega_max*torch.sign(dvds[..., 2]),
-                                self.accel_max*torch.sign(dvds[..., 3])], dim=-1)
+        p_v = dvds[..., 2]
+        turn_coeff = dvds[..., 3] * state[..., 2]
+
+        if self.set_mode == 'avoid':
+            a = torch.where(p_v >= 0.0, torch.full_like(p_v, self.umax_a), torch.full_like(p_v, self.umin_a))
+            w = torch.where(turn_coeff >= 0.0, torch.full_like(turn_coeff, self.umax_w), torch.full_like(turn_coeff, self.umin_w))
+        else:
+            a = torch.where(p_v >= 0.0, torch.full_like(p_v, self.umin_a), torch.full_like(p_v, self.umax_a))
+            w = torch.where(turn_coeff >= 0.0, torch.full_like(turn_coeff, self.umin_w), torch.full_like(turn_coeff, self.umax_w))
+        return torch.stack((a, w), dim=-1)
 
     def optimal_disturbance(self, state, dvds):
         return 0
     
     def plot_config(self):
         return {
-            'state_slices': [0, 0, 0, 0.5],
-            'state_labels': ['x', 'y', r'$\theta$', 'v'],
+            'state_slices': [0.0, 2.0, 2.0, 0.0],
+            'state_labels': ['x', 'y', 'v', 'theta'],
             'x_axis_idx': 0,
             'y_axis_idx': 1,
-            'z_axis_idx': 3,
+            'z_axis_idx': 2,
         }
 
 class Dubins4D(Dynamics):

@@ -1,3 +1,8 @@
+Command to run lunas dynamics on many gpus (dynamics is in dubins4d_new class), default set_mode is avoid and deepreach_model is exact:
+
+python run_experiment.py --mode train --experiment_name dubins4d_new_run --experiment_class DeepReach --dynamics_class Dubins4D_new --minWith target
+
+
 # DeepReach: A Deep Learning Approach to High-Dimensional Reachability
 ### [Project Page](http://people.eecs.berkeley.edu/~somil/index.html) | [Paper](https://arxiv.org/pdf/2011.02082.pdf)<br>
 
