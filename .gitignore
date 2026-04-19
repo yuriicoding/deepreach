@@ -134,6 +134,7 @@ wandb
 # experiment data
 *.npy
 *.json
+*.txt
 runs/
 
 #vscode settings

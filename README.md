@@ -4,12 +4,12 @@ torchrun --standalone --nproc_per_node=4 run_experiment.py --mode train --experi
 
 to run without saving intermediate models (speeds up training):
 
-torchrun --standalone --nproc_per_node=4 run_experiment.py --mode train --experiment_name dubins4d_new_run --experiment_class DeepReach --dynamics_class Dubins4D_new --minWith target --steps_til_summary 100000000 --epochs_til_ckpt 100000000
+torchrun --standalone --nproc_per_node=4 run_experiment.py --mode train --experiment_name dubins4d_new_run --experiment_class DeepReach --dynamics_class Dubins4D_new --minWith target --steps_til_summary 100000 --epochs_til_ckpt 100000
 
 
 to run with ground truth plave v_hat_all.npy - ground truth points; v_direct_all.npy - difference between V functions of decomposed systems; artifact_manifest.json - info about npy files in the root folder of the directory, and run the following command:
 
-torchrun --standalone --nproc_per_node=4 run_experiment.py --mode train --experiment_name dubins4d_new_run --experiment_class DeepReach --dynamics_class Dubins4D_new --minWith target --steps_til_summary 100000000 --epochs_til_ckpt 100000000 --use_vhat_guidance --gt_radius 0.05 --close_gap_scale 0.1
+torchrun --standalone --nproc_per_node=4 run_experiment.py --mode train --experiment_name dubins4d_new_run --experiment_class DeepReach --dynamics_class Dubins4D_new --minWith target --steps_til_summary 100000 --epochs_til_ckpt 100000 --use_vhat_guidance --gt_radius 0.05 --close_gap_scale 0.1
 
 
 --use_vhat_guidance
@@ -23,6 +23,17 @@ if the point is sampled within this radius for all of the grid dimensions, the g
 --close_gap_scale 0.1 (default)
 
 how much the difference of the V fucntions in the close_value_gap_all.npy is scaled before applying as weight regularizer for loss fucntion 
+
+
+
+Inference a model:
+
+python infer_deepreach_to_artifact_grid.py --model_name native_deepreach
+
+If you want a non-final checkpoint:
+
+python infer_deepreach_to_artifact_grid.py --model_name native_deepreach --checkpoint 5000
+
 
 # DeepReach: A Deep Learning Approach to High-Dimensional Reachability
 ### [Project Page](http://people.eecs.berkeley.edu/~somil/index.html) | [Paper](https://arxiv.org/pdf/2011.02082.pdf)<br>
