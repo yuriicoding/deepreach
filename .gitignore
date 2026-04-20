@@ -136,6 +136,9 @@ wandb
 *.json
 *.txt
 runs/
+60x60/
+120x120/
+brs_comparison_plots/
 
 #vscode settings
 .vscode
